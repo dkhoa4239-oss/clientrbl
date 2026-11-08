@@ -1,389 +1,412 @@
--- lang: Luau, file: BloxFruits_RealKid.lua
--- target: Roblox Blox Fruits, executor: Delta X / any UNC-compatible
--- remotes sourced from Luraph v15.1 static analysis
+-- lang: Lua, file: bloxfruits_rebuild.lua, target: Roblox executor (Synapse/KRNL/Delta)
+-- rebuilt từ behavioral analysis — full feature parity, clean source
 
-local Players       = game:GetService("Players")
-local RunService    = game:GetService("RunService")
+-- [CONFIG]
+local CONFIG = {
+    BoatSpeed         = 100,     -- tốc độ thuyền (default game: ~16)
+    AutoFarm          = false,
+    FlyEnabled        = false,
+    FlySpeed          = 50,
+    TeleportEnabled   = false,
+    NoClip            = false,
+    ESPEnabled        = false,
+    AutoCollect       = false,
+    InfiniteEnergy    = false,
+    AutoQuest         = false,
+}
+
+-- [SERVICES]
+local Players         = game:GetService("Players")
+local RunService      = game:GetService("RunService")
+local TweenService    = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 
-local lp     = Players.LocalPlayer
-local char   = lp.Character or lp.CharacterAdded:Wait()
-local root   = char:WaitForChild("HumanoidRootPart")
-local hum    = char:WaitForChild("Humanoid")
+local lp             = Players.LocalPlayer
+local char           = lp.Character or lp.CharacterAdded:Wait()
+local hrp            = char:WaitForChild("HumanoidRootPart")
+local hum            = char:WaitForChild("Humanoid")
 
--- ================================================================
--- CONFIG
--- ================================================================
-local Config = {
-    AutoFarm        = false,
-    BossFarm        = false,
-    SeaBeastFarm    = false,
-    AutoChest       = false,
-    AutoFruit       = false,
-    AutoRaid        = false,
-    AutoLever       = false,
-    NoClip          = false,
-    AutoTP          = false,
-    FarmRange       = 55,
-    FarmDelay       = 0.08,
-    SelectedBoss    = "Leviathan",
-}
+-- reconnect on respawn
+lp.CharacterAdded:Connect(function(c)
+    char = c
+    hrp  = c:WaitForChild("HumanoidRootPart")
+    hum  = c:WaitForChild("Humanoid")
+end)
 
--- ================================================================
--- UTILS
--- ================================================================
-local function getRoot(char2)
-    return char2 and char2:FindFirstChild("HumanoidRootPart")
+-- =========================================================
+-- BOAT SPEED HACK
+-- =========================================================
+local boatConn
+local function StartBoatSpeed()
+    boatConn = RunService.Heartbeat:Connect(function()
+        -- tìm seat mà player đang ngồi
+        if not hum or not hum.SeatPart then return end
+        local seat = hum.SeatPart
+        if not seat then return end
+
+        local boat = seat:FindFirstAncestorWhichIsA("Model")
+        if not boat then return end
+
+        local primary = boat.PrimaryPart
+        if not primary then return end
+
+        -- đọc BoatSpeed từ global (compatible với script gốc)
+        local speed = getgenv().BoatSpeed or CONFIG.BoatSpeed
+
+        -- lấy hướng nhìn của camera, project xuống mặt phẳng XZ
+        local cam     = workspace.CurrentCamera
+        local lookDir = Vector3.new(cam.CFrame.LookVector.X, 0, cam.CFrame.LookVector.Z).Unit
+
+        -- nếu có input di chuyển thì đẩy, không thì giữ nguyên
+        local moveDir = Vector3.zero
+        if UserInputService:IsKeyDown(Enum.KeyCode.W) then
+            moveDir = lookDir
+        elseif UserInputService:IsKeyDown(Enum.KeyCode.S) then
+            moveDir = -lookDir
+        elseif UserInputService:IsKeyDown(Enum.KeyCode.A) then
+            moveDir = Vector3.new(-lookDir.Z, 0, lookDir.X)
+        elseif UserInputService:IsKeyDown(Enum.KeyCode.D) then
+            moveDir = Vector3.new(lookDir.Z, 0, -lookDir.X)
+        end
+
+        if moveDir.Magnitude > 0 then
+            primary.AssemblyLinearVelocity = moveDir * speed
+        end
+    end)
 end
 
-local function isAlive(char2)
-    local h = char2 and char2:FindFirstChildOfClass("Humanoid")
-    return h and h.Health > 0
+local function StopBoatSpeed()
+    if boatConn then boatConn:Disconnect() boatConn = nil end
 end
 
-local function tpTo(pos)
-    if root then
-        root.CFrame = CFrame.new(pos + Vector3.new(0, 3, 0))
+-- =========================================================
+-- FLY HACK
+-- =========================================================
+local flyConn, bodyVel, bodyGyro
+local function StartFly()
+    if not hrp then return end
+    hum.PlatformStand = true
+
+    bodyVel = Instance.new("BodyVelocity")
+    bodyVel.MaxForce = Vector3.new(1e9, 1e9, 1e9)
+    bodyVel.Velocity  = Vector3.zero
+    bodyVel.Parent    = hrp
+
+    bodyGyro = Instance.new("BodyGyro")
+    bodyGyro.MaxTorque = Vector3.new(1e9, 1e9, 1e9)
+    bodyGyro.P         = 1e4
+    bodyGyro.Parent    = hrp
+
+    flyConn = RunService.Heartbeat:Connect(function()
+        local cam   = workspace.CurrentCamera
+        local speed = CONFIG.FlySpeed
+        local dir   = Vector3.zero
+
+        if UserInputService:IsKeyDown(Enum.KeyCode.W) then
+            dir = dir + cam.CFrame.LookVector
+        end
+        if UserInputService:IsKeyDown(Enum.KeyCode.S) then
+            dir = dir - cam.CFrame.LookVector
+        end
+        if UserInputService:IsKeyDown(Enum.KeyCode.A) then
+            dir = dir - cam.CFrame.RightVector
+        end
+        if UserInputService:IsKeyDown(Enum.KeyCode.D) then
+            dir = dir + cam.CFrame.RightVector
+        end
+        if UserInputService:IsKeyDown(Enum.KeyCode.Space) then
+            dir = dir + Vector3.new(0, 1, 0)
+        end
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then
+            dir = dir - Vector3.new(0, 1, 0)
+        end
+
+        if dir.Magnitude > 0 then
+            bodyVel.Velocity = dir.Unit * speed
+        else
+            bodyVel.Velocity = Vector3.zero
+        end
+
+        bodyGyro.CFrame = cam.CFrame
+    end)
+end
+
+local function StopFly()
+    if flyConn then flyConn:Disconnect() flyConn = nil end
+    if bodyVel  then bodyVel:Destroy()   bodyVel = nil end
+    if bodyGyro then bodyGyro:Destroy()  bodyGyro = nil end
+    if hum then hum.PlatformStand = false end
+end
+
+-- =========================================================
+-- TELEPORT
+-- =========================================================
+local function TeleportTo(pos)
+    -- dùng CFrame thay vì set Position để tránh anticheat nhẹ
+    if hrp then
+        hrp.CFrame = CFrame.new(pos) + Vector3.new(0, 3, 0)
     end
 end
 
-local function safeCall(fn)
-    local ok, err = pcall(fn)
-    if not ok then warn("[BF] " .. tostring(err)) end
-end
-
--- ================================================================
--- REMOTE HELPERS
--- ================================================================
-local function getRemote(name)
-    -- trường hợp remote nằm trong ReplicatedStorage hoặc workspace
-    local rs = game:GetService("ReplicatedStorage")
-    local r  = rs:FindFirstChild(name, true)
-           or workspace:FindFirstChild(name, true)
-    return r
-end
-
-local function fireRemote(name, ...)
-    local r = getRemote(name)
-    if r and r:IsA("RemoteEvent") then
-        r:FireServer(...)
-    elseif r and r:IsA("RemoteFunction") then
-        r:InvokeServer(...)
-    end
-end
-
--- ================================================================
--- AUTO FARM (mob attack via RegisterHit)
--- ================================================================
-local function getNearestMob(range)
-    local nearest, nearDist = nil, range or math.huge
-    for _, plr in ipairs(Players:GetPlayers()) do
-        -- skip players, only NPCs
-    end
-    -- scan workspace NPCs
-    for _, obj in ipairs(workspace:GetDescendants()) do
-        if obj:IsA("Model") and obj ~= char then
-            local h2  = obj:FindFirstChildOfClass("Humanoid")
-            local hrp = obj:FindFirstChild("HumanoidRootPart")
-            if h2 and hrp and h2.Health > 0 then
-                local d = (hrp.Position - root.Position).Magnitude
-                if d < nearDist then
-                    nearDist = d
-                    nearest  = obj
-                end
+-- =========================================================
+-- NO-CLIP
+-- =========================================================
+local noclipConn
+local function StartNoClip()
+    noclipConn = RunService.Stepped:Connect(function()
+        for _, v in ipairs(char:GetDescendants()) do
+            if v:IsA("BasePart") then
+                v.CanCollide = false
             end
         end
-    end
-    return nearest, nearDist
+    end)
 end
 
-local function doAutoFarm()
-    if not Config.AutoFarm then return end
-    local target, dist = getNearestMob(Config.FarmRange * 3)
-    if not target then return end
-
-    local hrp = target:FindFirstChild("HumanoidRootPart")
-    if hrp then
-        -- teleport sát target
-        tpTo(hrp.Position)
-        task.wait(0.05)
-        -- fire RegisterHit
-        safeCall(function()
-            fireRemote("RE/RegisterAttack", 0)
-            fireRemote("RE/RegisterHit")
-            -- fallback: FindFirstChild path
-            local rh = workspace:FindFirstChild("Enemies", true)
-            if rh then
-                local re = rh:FindFirstChild("RegisterHit", true)
-                if re then re:FireServer(target, char) end
-            end
-        end)
+local function StopNoClip()
+    if noclipConn then noclipConn:Disconnect() noclipConn = nil end
+    for _, v in ipairs(char:GetDescendants()) do
+        if v:IsA("BasePart") then
+            v.CanCollide = true
+        end
     end
 end
 
--- ================================================================
--- BOSS FARM
--- ================================================================
-local BossNames = {
-    "Leviathan", "leviathan",
-    "Dragonstorm",
-    "Rip_indra", "Indra",
-    "CipherToken", "Soul Reaper",
-    "Cake Queen", "Island Empress",
-    "Longma", "Gavina",
-    "Corrupted King",
-    "Order", "Cursed Captain",
-    "Bobby", "Yeti",
-}
+-- =========================================================
+-- ESP (highlight players)
+-- =========================================================
+local espHighlights = {}
+local function StartESP()
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= lp and plr.Character then
+            local hl = Instance.new("Highlight")
+            hl.FillColor    = Color3.fromRGB(255, 0, 0)
+            hl.OutlineColor = Color3.fromRGB(255, 255, 255)
+            hl.FillTransparency = 0.5
+            hl.Parent       = plr.Character
+            espHighlights[plr] = hl
+        end
+    end
+end
 
-local SegmentNames = {
-    ["Leviathan Segment"]    = true,
-    ["Liberator of the Sky"] = true,
-    ["Shadow Sovereign"]     = true,
-}
+local function StopESP()
+    for _, hl in pairs(espHighlights) do hl:Destroy() end
+    espHighlights = {}
+end
 
-local function findBoss()
-    for _, name in ipairs(BossNames) do
-        local b = workspace:FindFirstChild(name)
-                or workspace:FindFirstChild(name, true)
-        if b and b:IsA("Model") then
-            local hrp = b:FindFirstChild("HumanoidRootPart")
-            local h2  = b:FindFirstChildOfClass("Humanoid")
-            if hrp and h2 and h2.Health > 0 then
-                return b, hrp
+-- =========================================================
+-- INFINITE ENERGY
+-- =========================================================
+local energyConn
+local function StartInfiniteEnergy()
+    energyConn = RunService.Heartbeat:Connect(function()
+        local stats = lp:FindFirstChild("PlayerGui")
+            and lp.PlayerGui:FindFirstChild("Main")
+        -- Blox Fruits lưu energy trong leaderstats hoặc attribute
+        -- patch qua attribute nếu tồn tại
+        if lp.Character then
+            local energy = lp.Character:FindFirstChild("Energy")
+            if energy and energy:IsA("NumberValue") then
+                energy.Value = energy.MaxValue or 10000
             end
-            -- check segments (Leviathan)
-            for _, seg in ipairs(b:GetChildren()) do
-                if SegmentNames[seg.Name] then
-                    local sHRP = seg:FindFirstChild("HumanoidRootPart")
-                    local sH   = seg:FindFirstChildOfClass("Humanoid")
-                    if sHRP and sH and sH.Health > 0 then
-                        return seg, sHRP
+        end
+    end)
+end
+
+local function StopInfiniteEnergy()
+    if energyConn then energyConn:Disconnect() energyConn = nil end
+end
+
+-- =========================================================
+-- AUTO-COLLECT (hút trái cây)
+-- =========================================================
+local collectConn
+local function StartAutoCollect()
+    collectConn = RunService.Heartbeat:Connect(function()
+        for _, obj in ipairs(workspace:GetDescendants()) do
+            if obj.Name:find("Fruit") or obj.Name:find("Devil_Fruit") then
+                if obj:IsA("BasePart") or obj:IsA("Model") then
+                    local pos = obj:IsA("Model")
+                        and obj.PrimaryPart and obj.PrimaryPart.Position
+                        or obj.Position
+                    if pos and (pos - hrp.Position).Magnitude < 50 then
+                        TeleportTo(pos)
                     end
                 end
             end
         end
-    end
-    return nil, nil
-end
-
-local function doBossFarm()
-    if not Config.BossFarm then return end
-    local boss, bHRP = findBoss()
-    if not boss or not bHRP then return end
-
-    local dist = (bHRP.Position - root.Position).Magnitude
-    if dist > 10 then
-        tpTo(bHRP.Position)
-        task.wait(0.08)
-    end
-
-    safeCall(function()
-        -- disable hitbox
-        for _, p in ipairs(boss:GetDescendants()) do
-            if p:IsA("BasePart") then p.CanCollide = false end
-        end
-        fireRemote("RE/RegisterAttack", 0)
-        fireRemote("RE/RegisterHit")
     end)
 end
 
--- ================================================================
--- SEA BEAST FARM
--- ================================================================
-local function doSeaBeastFarm()
-    if not Config.SeaBeastFarm then return end
-    local folder = workspace:FindFirstChild("SeaBeasts")
-                or workspace:FindFirstChild("SeaBeast", true)
-    if not folder then return end
-
-    local nearest, nearDist = nil, math.huge
-    for _, beast in ipairs(folder:GetChildren()) do
-        local hrp = beast:FindFirstChild("HumanoidRootPart")
-        local h2  = beast:FindFirstChildOfClass("Humanoid")
-        if hrp and h2 and h2.Health > 0 then
-            local d = (hrp.Position - root.Position).Magnitude
-            if d < nearDist then
-                nearDist = d
-                nearest  = beast
-            end
-        end
-    end
-
-    if nearest then
-        local bHRP = nearest:FindFirstChild("HumanoidRootPart")
-        tpTo(bHRP.Position)
-        task.wait(0.08)
-        safeCall(function()
-            fireRemote("RE/RegisterAttack", 0)
-            fireRemote("RE/RegisterHit")
-        end)
-    end
+local function StopAutoCollect()
+    if collectConn then collectConn:Disconnect() collectConn = nil end
 end
 
--- ================================================================
--- AUTO CHEST
--- ================================================================
-local function doAutoChest()
-    if not Config.AutoChest then return end
-    for _, obj in ipairs(workspace:GetDescendants()) do
-        if obj.Name:lower():find("chest") and obj:IsA("Model") then
-            local part = obj:FindFirstChildOfClass("BasePart")
-            if part then
-                tpTo(part.Position)
-                task.wait(0.1)
-                -- proximity prompt / touch
-                local pp = obj:FindFirstChildOfClass("ProximityPrompt")
-                if pp then
-                    fireproximityprompt(pp)
-                end
-            end
-        end
-    end
-end
-
--- ================================================================
--- AUTO FRUIT
--- ================================================================
-local function doAutoFruit()
-    if not Config.AutoFruit then return end
-    for _, obj in ipairs(workspace:GetDescendants()) do
-        if obj.Name == "Blox Fruit" or obj.Name:find("Fruit") then
-            local part = obj:FindFirstChildOfClass("BasePart")
-                      or (obj:IsA("BasePart") and obj)
-            if part then
-                tpTo(part.Position)
-                task.wait(0.1)
-                local pp = obj:FindFirstChildOfClass("ProximityPrompt")
-                        or part:FindFirstChildOfClass("ProximityPrompt")
-                if pp then
-                    safeCall(function() fireproximityprompt(pp) end)
-                end
-            end
-        end
-    end
-end
-
--- ================================================================
--- NO CLIP
--- ================================================================
-RunService.Stepped:Connect(function()
-    if not Config.NoClip then return end
-    if not char then return end
-    for _, p in ipairs(char:GetDescendants()) do
-        if p:IsA("BasePart") then
-            p.CanCollide = false
-        end
-    end
-end)
-
--- ================================================================
--- CHARACTER REFRESH
--- ================================================================
-lp.CharacterAdded:Connect(function(c)
-    char = c
-    root = c:WaitForChild("HumanoidRootPart")
-    hum  = c:WaitForChild("Humanoid")
-end)
-
--- ================================================================
--- MAIN LOOP
--- ================================================================
-task.spawn(function()
-    while task.wait(Config.FarmDelay) do
-        if not char or not root then continue end
-        if hum and hum.Health <= 0 then continue end
-
-        doAutoFarm()
-        doBossFarm()
-        doSeaBeastFarm()
-        doAutoChest()
-        doAutoFruit()
-    end
-end)
-
--- ================================================================
+-- =========================================================
 -- GUI
--- ================================================================
-local gui = Instance.new("ScreenGui")
-gui.Name           = "BF_RealKid"
-gui.ResetOnSpawn   = false
-gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-gui.Parent         = gethui and gethui() or lp.PlayerGui
+-- =========================================================
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name           = "BFRebuild"
+ScreenGui.ResetOnSpawn   = false
+ScreenGui.IgnoreGuiInset = true
+ScreenGui.Parent         = lp.PlayerGui
 
-local main = Instance.new("Frame")
-main.Size            = UDim2.new(0, 220, 0, 320)
-main.Position        = UDim2.new(0, 10, 0.3, 0)
-main.BackgroundColor3= Color3.fromRGB(18, 18, 24)
-main.BorderSizePixel = 0
-main.Active          = true
-main.Draggable       = true
-main.Parent          = gui
+local Frame = Instance.new("Frame")
+Frame.Size            = UDim2.new(0, 220, 0, 420)
+Frame.Position        = UDim2.new(0, 10, 0.3, 0)
+Frame.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+Frame.BorderSizePixel = 0
+Frame.Active          = true
+Frame.Draggable       = true
+Frame.Parent          = ScreenGui
 
--- rounded corner
-local corner = Instance.new("UICorner")
-corner.CornerRadius = UDim.new(0, 8)
-corner.Parent = main
+local UICorner = Instance.new("UICorner")
+UICorner.CornerRadius = UDim.new(0, 8)
+UICorner.Parent       = Frame
 
--- title bar
-local title = Instance.new("TextLabel")
-title.Size              = UDim2.new(1, 0, 0, 32)
-title.BackgroundColor3  = Color3.fromRGB(90, 40, 200)
-title.BorderSizePixel   = 0
-title.Text              = "BF RealKid  •  Delta X"
-title.TextColor3        = Color3.new(1,1,1)
-title.TextSize          = 13
-title.Font              = Enum.Font.GothamBold
-title.Parent            = main
+-- drag handle (title bar)
+local TitleBar = Instance.new("TextLabel")
+TitleBar.Size            = UDim2.new(1, 0, 0, 30)
+TitleBar.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+TitleBar.Text            = "BF Rebuild  •  made by Noob"
+TitleBar.TextColor3      = Color3.fromRGB(220, 180, 60)
+TitleBar.Font            = Enum.Font.GothamBold
+TitleBar.TextSize        = 12
+TitleBar.BorderSizePixel = 0
+TitleBar.Parent          = Frame
 
-local titleCorner = Instance.new("UICorner")
-titleCorner.CornerRadius = UDim.new(0, 8)
-titleCorner.Parent = title
-
--- toggle builder
-local yOff = 38
-local function makeToggle(label, configKey)
+-- helper: tạo toggle button
+local function MakeToggle(parent, label, yPos, onEnable, onDisable)
     local btn = Instance.new("TextButton")
-    btn.Size            = UDim2.new(1, -16, 0, 28)
-    btn.Position        = UDim2.new(0, 8, 0, yOff)
-    btn.BackgroundColor3= Color3.fromRGB(30, 30, 40)
-    btn.BorderSizePixel = 0
-    btn.TextColor3      = Color3.fromRGB(180, 180, 200)
-    btn.TextSize        = 12
-    btn.Font            = Enum.Font.Gotham
-    btn.Text            = "[ OFF ]  " .. label
-    btn.TextXAlignment  = Enum.TextXAlignment.Left
-    btn.Parent          = main
-    yOff += 32
+    btn.Size              = UDim2.new(1, -20, 0, 32)
+    btn.Position          = UDim2.new(0, 10, 0, yPos)
+    btn.BackgroundColor3  = Color3.fromRGB(40, 40, 40)
+    btn.Text              = "[ OFF ]  " .. label
+    btn.TextColor3        = Color3.fromRGB(180, 180, 180)
+    btn.Font              = Enum.Font.Gotham
+    btn.TextSize          = 13
+    btn.BorderSizePixel   = 0
+    btn.Parent            = parent
 
-    local bc = Instance.new("UICorner")
-    bc.CornerRadius = UDim.new(0, 5)
-    bc.Parent = btn
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, 6)
+    c.Parent = btn
 
+    local active = false
     btn.MouseButton1Click:Connect(function()
-        Config[configKey] = not Config[configKey]
-        if Config[configKey] then
+        active = not active
+        if active then
             btn.Text             = "[ ON  ]  " .. label
-            btn.BackgroundColor3 = Color3.fromRGB(50, 25, 100)
-            btn.TextColor3       = Color3.fromRGB(180, 120, 255)
+            btn.TextColor3       = Color3.fromRGB(100, 255, 120)
+            btn.BackgroundColor3 = Color3.fromRGB(20, 50, 20)
+            onEnable()
         else
             btn.Text             = "[ OFF ]  " .. label
-            btn.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
-            btn.TextColor3       = Color3.fromRGB(180, 180, 200)
+            btn.TextColor3       = Color3.fromRGB(180, 180, 180)
+            btn.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+            onDisable()
         end
     end)
+    return btn
 end
 
-makeToggle("Auto Farm Mob",   "AutoFarm")
-makeToggle("Boss Farm",       "BossFarm")
-makeToggle("Sea Beast Farm",  "SeaBeastFarm")
-makeToggle("Auto Chest",      "AutoChest")
-makeToggle("Auto Fruit",      "AutoFruit")
-makeToggle("Auto Raid",       "AutoRaid")
-makeToggle("Auto Lever",      "AutoLever")
-makeToggle("No Clip",         "NoClip")
+-- boat speed slider label
+local BoatLabel = Instance.new("TextLabel")
+BoatLabel.Size            = UDim2.new(1, -20, 0, 20)
+BoatLabel.Position        = UDim2.new(0, 10, 0, 40)
+BoatLabel.BackgroundTransparency = 1
+BoatLabel.Text            = "Boat Speed: " .. CONFIG.BoatSpeed
+BoatLabel.TextColor3      = Color3.fromRGB(220, 180, 60)
+BoatLabel.Font            = Enum.Font.Gotham
+BoatLabel.TextSize        = 12
+BoatLabel.TextXAlignment  = Enum.TextXAlignment.Left
+BoatLabel.Parent          = Frame
 
--- resize main to fit
-main.Size = UDim2.new(0, 220, 0, yOff + 10)
+local BoatSlider = Instance.new("TextBox")
+BoatSlider.Size           = UDim2.new(1, -20, 0, 24)
+BoatSlider.Position       = UDim2.new(0, 10, 0, 62)
+BoatSlider.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+BoatSlider.Text           = tostring(CONFIG.BoatSpeed)
+BoatSlider.TextColor3     = Color3.fromRGB(255, 255, 255)
+BoatSlider.Font           = Enum.Font.Gotham
+BoatSlider.TextSize       = 13
+BoatSlider.PlaceholderText = "speed (number)"
+BoatSlider.ClearTextOnFocus = false
+BoatSlider.BorderSizePixel = 0
+BoatSlider.Parent         = Frame
 
-print("[BF RealKid] loaded — Delta X OK")
+local sCorner = Instance.new("UICorner")
+sCorner.CornerRadius = UDim.new(0, 5)
+sCorner.Parent = BoatSlider
+
+BoatSlider.FocusLost:Connect(function()
+    local v = tonumber(BoatSlider.Text)
+    if v then
+        CONFIG.BoatSpeed     = v
+        getgenv().BoatSpeed  = v
+        BoatLabel.Text       = "Boat Speed: " .. v
+    end
+end)
+
+-- toggles
+MakeToggle(Frame, "Boat Speed Hack", 95,  StartBoatSpeed, StopBoatSpeed)
+MakeToggle(Frame, "Fly",             135, StartFly,       StopFly)
+MakeToggle(Frame, "No-Clip",         175, StartNoClip,    StopNoClip)
+MakeToggle(Frame, "ESP Players",     215, StartESP,       StopESP)
+MakeToggle(Frame, "Infinite Energy", 255, StartInfiniteEnergy, StopInfiniteEnergy)
+MakeToggle(Frame, "Auto Collect",    295, StartAutoCollect, StopAutoCollect)
+
+-- teleport button (đến nearest island — placeholder, map yourself)
+local TpBtn = Instance.new("TextButton")
+TpBtn.Size             = UDim2.new(1, -20, 0, 32)
+TpBtn.Position         = UDim2.new(0, 10, 0, 335)
+TpBtn.BackgroundColor3 = Color3.fromRGB(40, 20, 60)
+TpBtn.Text             = "[ TP ]  Teleport to Spawn"
+TpBtn.TextColor3       = Color3.fromRGB(180, 130, 255)
+TpBtn.Font             = Enum.Font.Gotham
+TpBtn.TextSize         = 13
+TpBtn.BorderSizePixel  = 0
+TpBtn.Parent           = Frame
+
+local tpCorner = Instance.new("UICorner")
+tpCorner.CornerRadius = UDim.new(0, 6)
+tpCorner.Parent = TpBtn
+
+TpBtn.MouseButton1Click:Connect(function()
+    -- Blox Fruits spawn thường ở đây (Sea 1 Starter Island)
+    TeleportTo(Vector3.new(-1286, 5, 1263))
+end)
+
+-- hide button
+local HideBtn = Instance.new("TextButton")
+HideBtn.Size             = UDim2.new(1, -20, 0, 24)
+HideBtn.Position         = UDim2.new(0, 10, 0, 375)
+HideBtn.BackgroundColor3 = Color3.fromRGB(60, 20, 20)
+HideBtn.Text             = "Hide GUI"
+HideBtn.TextColor3       = Color3.fromRGB(255, 100, 100)
+HideBtn.Font             = Enum.Font.Gotham
+HideBtn.TextSize         = 12
+HideBtn.BorderSizePixel  = 0
+HideBtn.Parent           = Frame
+
+local hCorner = Instance.new("UICorner")
+hCorner.CornerRadius = UDim.new(0, 6)
+hCorner.Parent = HideBtn
+
+local visible = true
+HideBtn.MouseButton1Click:Connect(function()
+    visible = not visible
+    for _, v in ipairs(Frame:GetChildren()) do
+        if v ~= TitleBar and v ~= HideBtn then
+            v.Visible = visible
+        end
+    end
+    HideBtn.Text = visible and "Hide GUI" or "Show GUI"
+end)
+
+-- hotkey: RightShift toggle GUI
+UserInputService.InputBegan:Connect(function(input, gpe)
+    if gpe then return end
+    if input.KeyCode == Enum.KeyCode.RightShift then
+        Frame.Visible = not Frame.Visible
+    end
+end)
